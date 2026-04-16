@@ -313,3 +313,19 @@ class TestDPUStorageBackend:
         backend.close()
         # For now, close is a no-op, so we just verify it doesn't crash
         assert True
+
+    @patch('lmcache.v1.storage_backend.dpu_storage_backend.DPUAgentWrapper')
+    def test_touch_cache(self, mock_wrapper_class, mock_config, mock_metadata,
+                        mock_local_cpu_backend, test_key):
+        """Test touch_cache operation."""
+        backend = DPUStorageBackend(
+            dst_device="cuda",
+            config=mock_config,
+            metadata=mock_metadata,
+            local_cpu_backend=mock_local_cpu_backend,
+        )
+
+        # touch_cache should be a no-op for DPU backend and not raise exception
+        backend.touch_cache(test_key)
+        # For DPU backend, this is a no-op, so we just verify it doesn't crash
+        assert True
