@@ -73,7 +73,7 @@ class DPUStorageBackend(StoragePluginInterface):
         # DPU configuration from config
         dpu_config_dict = config.extra_config or {}
         self.dpu_config = DPUConfig(
-            dpu_device_pci=dpu_config_dict.get("host_pci_addr", "03:00.0"),
+            dpu_device_pci=dpu_config_dict.get("dpu_device_pci", "03:00.0"),
             dpu_ip=dpu_config_dict.get("dpu_ip", "127.0.0.1"),
             gpu_id=dpu_config_dict.get("gpu_id", 0),
             max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16)
