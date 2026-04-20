@@ -16,7 +16,8 @@ Key Features:
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Sequence, Callable, Any
+from concurrent.futures import Future
 import torch
 
 from lmcache.utils import CacheEngineKey
@@ -86,16 +87,18 @@ class DPUStorageBackend(StoragePluginInterface):
             logger.info(f"DPU storage backend initialized with device {self.dpu_config.host_pci_addr}")
         except Exception as e:
             logger.error(f"Failed to initialize DPU agent: {e}")
+            self.dpu_available = False
 
         # Fallback storage for when DPU is unavailable
         self.fallback_storage: Dict[str, MemoryObj] = {}
 
-    def contains(self, key: CacheEngineKey) -> bool:
+    def contains(self, key: CacheEngineKey, pin: bool = False) -> bool:
         """
         Check if a key exists in the storage backend.
 
         Args:
             key: The cache engine key to check
+            pin: Whether to pin the key (ignored for DPU backend)
 
         Returns:
             True if the key exists, False otherwise
@@ -115,9 +118,11 @@ class DPUStorageBackend(StoragePluginInterface):
 
     def batched_submit_put_task(
         self,
-        keys: List[CacheEngineKey],
-        objs: List[MemoryObj]
-    ) -> Optional[List]:
+        keys: Sequence[CacheEngineKey],
+        objs: List[MemoryObj],
+        transfer_spec: Any = None,
+        on_complete_callback: Optional[Callable[[CacheEngineKey], None]] = None,
+    ) -> Union[List[Future], None]:
         """
         Submit a batched put task to store KV caches.
 
@@ -125,17 +130,25 @@ class DPUStorageBackend(StoragePluginInterface):
         stored to the DPU storage backend.
 
         Args:
-            keys: List of cache engine keys
+            keys: Sequence of cache engine keys
             objs: List of memory objects to store
+            transfer_spec: Optional transfer specification (ignored for DPU backend)
+            on_complete_callback: Optional callback invoked per key completion
 
         Returns:
-            None for synchronous operations, List of tasks for async operations
+            None for synchronous operations, List of Future objects for async operations
         """
         if len(keys) != len(objs):
             raise ValueError("Keys and objects lists must have the same length")
 
         for key, obj in zip(keys, objs):
             self._store_single_object(key, obj)
+            # Invoke callback if provided
+            if on_complete_callback is not None:
+                try:
+                    on_complete_callback(key)
+                except Exception as e:
+                    logger.warning(f"Callback failed for key {key}: {e}")
 
         # Return None for synchronous operations
         return None
