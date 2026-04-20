@@ -71,7 +71,7 @@ class DPUStorageBackend(StoragePluginInterface):
         self.loop = loop or asyncio.get_event_loop()
 
         # DPU configuration from config
-        dpu_config_dict = config.storage_backend.config
+        dpu_config_dict = config.extra_config or {}
         self.dpu_config = DPUConfig(
             dpu_device_pci=dpu_config_dict.get("dpu_device_pci", "03:00.0"),
             max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16),
