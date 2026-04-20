@@ -25,8 +25,7 @@ from lmcache.v1.memory_management import MemoryObj, MemoryFormat
 from lmcache.v1.metadata import LMCacheMetadata
 from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
-from lmcache.v1.storage_backend.dpu.agent_wrapper import DPUAgentWrapper
-from lmcache.v1.storage_backend.dpu.config import DPUConfig
+from dpu_cache import DPUConfig,DPUAgent
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ class DPUStorageBackend(StoragePluginInterface):
 
         # Initialize DPU agent wrapper
         try:
-            self.dpu_agent = DPUAgentWrapper(self.dpu_config)
+            self.dpu_agent = DPUAgent(self.dpu_config)
             self.dpu_available = True
             logger.info(f"DPU storage backend initialized with device {self.dpu_config.dpu_device_pci}")
         except Exception as e:
