@@ -73,12 +73,10 @@ class DPUStorageBackend(StoragePluginInterface):
         # DPU configuration from config
         dpu_config_dict = config.extra_config or {}
         self.dpu_config = DPUConfig(
-            dpu_device_pci=dpu_config_dict.get("dpu_device_pci", "03:00.0"),
-            max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16),
-            connection_timeout=dpu_config_dict.get("connection_timeout", 5.0),
-            retry_attempts=dpu_config_dict.get("retry_attempts", 3),
-            fallback_enabled=dpu_config_dict.get("fallback_enabled", True),
-            metadata_cache_size=dpu_config_dict.get("metadata_cache_size", 1000)
+            dpu_device_pci=dpu_config_dict.get("host_pci_addr", "03:00.0"),
+            dpu_ip=dpu_config_dict.get("dpu_ip", "127.0.0.1"),
+            gpu_id=dpu_config_dict.get("gpu_id", 0),
+            max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16)
         )
 
         # Initialize DPU agent wrapper
