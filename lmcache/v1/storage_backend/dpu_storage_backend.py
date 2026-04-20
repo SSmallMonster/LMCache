@@ -25,8 +25,8 @@ from lmcache.v1.memory_management import MemoryObj, MemoryFormat
 from lmcache.v1.metadata import LMCacheMetadata
 from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
-from lmcache.v1.dpu.dpu_agent_wrapper import DPUAgentWrapper
-from lmcache.v1.dpu.dpu_config import DPUConfig
+from lmcache.v1.storage_backend.dpu.agent_wrapper import DPUAgentWrapper
+from lmcache.v1.storage_backend.dpu.config import DPUConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class DPUStorageBackend(StoragePluginInterface):
         # DPU configuration from config
         dpu_config_dict = config.storage_backend.config
         self.dpu_config = DPUConfig(
-            device_pci=dpu_config_dict.get("dpu_device_pci", "03:00.0"),
+            dpu_device_pci=dpu_config_dict.get("dpu_device_pci", "03:00.0"),
             max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16),
             connection_timeout=dpu_config_dict.get("connection_timeout", 5.0),
             retry_attempts=dpu_config_dict.get("retry_attempts", 3),
@@ -86,7 +86,7 @@ class DPUStorageBackend(StoragePluginInterface):
         try:
             self.dpu_agent = DPUAgentWrapper(self.dpu_config)
             self.dpu_available = True
-            logger.info(f"DPU storage backend initialized with device {self.dpu_config.device_pci}")
+            logger.info(f"DPU storage backend initialized with device {self.dpu_config.dpu_device_pci}")
         except Exception as e:
             logger.error(f"Failed to initialize DPU agent: {e}")
             if self.dpu_config.fallback_enabled:
@@ -296,7 +296,7 @@ class DPUStorageBackend(StoragePluginInterface):
         if self.dpu_available:
             try:
                 k_tensor, v_tensor = self._extract_kv_tensors(obj)
-                success = self.dpu_agent.store_kv(key_str, k_tensor, v_tensor)
+                success = self.dpu_agent.store_kv_cache(key_str, k_tensor, v_tensor)
                 if success:
                     return
             except Exception as e:
@@ -319,18 +319,28 @@ class DPUStorageBackend(StoragePluginInterface):
         Returns:
             Tuple of (k_tensor, v_tensor)
         """
-        if obj.fmt != MemoryFormat.KV_2LTD:
-            raise ValueError(f"Unsupported memory format: {obj.fmt}")
+        if obj.meta.fmt != MemoryFormat.KV_2LTD:
+            raise ValueError(f"Unsupported memory format: {obj.meta.fmt}")
 
-        # For KV_2LTD format, the tensor contains flattened K and V concatenated
+        # For KV_2LTD format, we need to use raw_tensor (the flattened data)
+        # instead of tensor (which is already reshaped)
+        raw_tensor = obj.raw_tensor
+        if raw_tensor is None:
+            raise ValueError("Memory object has no raw tensor data")
+
+        # For KV_2LTD format, the raw tensor contains flattened K and V concatenated
         # We need to split it back into K and V tensors
-        total_size = obj.tensor.numel()
+        total_size = raw_tensor.numel()
         if total_size % 2 != 0:
             raise ValueError("KV tensor size must be even for K/V split")
 
         k_size = total_size // 2
-        k_tensor = obj.tensor[:k_size].view(obj.shape)
-        v_tensor = obj.tensor[k_size:].view(obj.shape)
+        k_tensor_flat = raw_tensor[:k_size]
+        v_tensor_flat = raw_tensor[k_size:total_size]
+
+        # Reshape to the original logical shape
+        k_tensor = k_tensor_flat.view(obj.meta.shape)
+        v_tensor = v_tensor_flat.view(obj.meta.shape)
 
         return k_tensor, v_tensor
 
