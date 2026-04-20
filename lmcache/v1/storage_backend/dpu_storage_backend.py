@@ -83,14 +83,9 @@ class DPUStorageBackend(StoragePluginInterface):
         try:
             self.dpu_agent = DPUAgent(self.dpu_config)
             self.dpu_available = True
-            logger.info(f"DPU storage backend initialized with device {self.dpu_config.dpu_device_pci}")
+            logger.info(f"DPU storage backend initialized with device {self.dpu_config.host_pci_addr}")
         except Exception as e:
             logger.error(f"Failed to initialize DPU agent: {e}")
-            if self.dpu_config.fallback_enabled:
-                self.dpu_available = False
-                logger.warning("DPU unavailable, will use fallback storage")
-            else:
-                raise
 
         # Fallback storage for when DPU is unavailable
         self.fallback_storage: Dict[str, MemoryObj] = {}
