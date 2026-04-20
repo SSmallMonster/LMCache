@@ -296,7 +296,7 @@ class DPUStorageBackend(StoragePluginInterface):
         if self.dpu_available:
             try:
                 k_tensor, v_tensor = self._extract_kv_tensors(obj)
-                success = self.dpu_agent.store_kv_cache(key_str, k_tensor, v_tensor)
+                success = self.dpu_agent.store_kv(key_str, k_tensor, v_tensor)
                 if success:
                     return
             except Exception as e:

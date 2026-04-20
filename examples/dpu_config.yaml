@@ -1,0 +1,21 @@
+# DPU Backend Configuration Example
+# This configuration demonstrates how to enable and configure the DPU storage backend in LMCache
+
+storage_plugins: ["dpu"]
+
+extra_config:
+  storage_plugin.dpu.module_path: "lmcache.v1.storage_backend.dpu_storage_backend"
+  storage_plugin.dpu.class_name: "DPUStorageBackend"
+
+# Enable local CPU backend as a dependency for DPU operations
+local_cpu: true
+max_local_cpu_size: 1073741824  # 1GB
+
+# Optional: Enable audit logging for debugging and monitoring
+# audit_backend_enabled: true
+
+# Other standard LMCache configuration options
+enable_pd: false
+enable_p2p: false
+local_disk: false
+max_local_disk_size: 0
