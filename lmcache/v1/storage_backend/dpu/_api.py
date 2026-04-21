@@ -7,8 +7,6 @@ import numpy as np
 from typing import Tuple, Optional
 import logging
 
-from .exceptions import DPUConnectionError, DPUOperationError
-
 logger = logging.getLogger(__name__)
 
 # Torch dtype到整数的映射
