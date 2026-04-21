@@ -74,8 +74,7 @@ python3 -c "import lmcache.v1.storage_backend.dpu_storage_backend as dpu_storage
 
 1. 创建 `lmcache_dpu.yaml`
 
-```shell
-(venv) root@r6kd-2:~/mmzhou# cat lmcache_dpu.yaml 
+```yaml
 chunk_size: 64
 local_cpu: False
 save_unfull_chunk: True
@@ -88,4 +87,27 @@ extra_config:
   dpu_ip: "10.75.70.128"
   max_concurrent_ops: 16
   gpu_id: 3
+```
+
+2. 启动 vLLM
+
+```shell
+CUDA_VISIBLE_DEVICES=3 LMCACHE_CONFIG_FILE=/root/mmzhou/lmcache_dpu.yaml vllm serve /root/models/Qwen3-0.6B --port 7990 --kv-transfer-config '{"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}'
+```
+
+读写日志：
+```shell
+Successfully stored KV cache for key: CacheEngineKey(model_name='/root/models/Qwen3-0.6B', world_size=1, worker_id=0, chunk_hash=7087119673989932035, dtype=torch.bfloat16, request_configs=None, tags=None, _dtype_str='bfloat16')
+[DPU_CACHE] Generated safe file path: /tmp/kv_cache_8fa70b5b.bin (from key: CacheEngineKey(model_name='/root/models/Qwen3-0.6B...)
+K tensor copy: CPU -> GPU (Host-to-Device)
+V tensor copy: CPU -> GPU (Host-to-Device)
+[DPU_CACHE] perform_dma_push called: gpu_data=0x7f6827400000, size=7340112, path=/tmp/kv_cache_8fa70b5b.bin
+[DPU_CACHE] Performing real DMA push: size=7340112 bytes to /tmp/kv_cache_8fa70b5b.bin
+[HOST] Starting real DMA push: 7340112 bytes to /tmp/kv_cache_8fa70b5b.bin
+[HOST] Sending DMA request: req_id=1605908235, size=7340112
+[HOST] Received response: status=0, error_code=0
+[HOST] Push complete: 7340112 bytes to /tmp/kv_cache_8fa70b5b.bin
+[HOST] End-to-end: 0.003988 sec, 1.84 GB/s
+[HOST] DPU DMA only: 0.000378 sec, 19.42 GB/s
+[DPU_CACHE SUCCESS] DMA push completed successfully
 ```
