@@ -19,6 +19,7 @@ if [ ! -f "build/libdpu_cache.so" ]; then
     echo "Error: libdpu_cache.so not found!"
     exit 1
 fi
+ln -s build/libdpu_cache.so /usr/local/lib/libdpu_cache.so
 
 echo "Step 2: Setting up Python package..."
 

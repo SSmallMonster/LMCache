@@ -2,84 +2,90 @@
 
 ## 构建和安装
 
-1. **构建C共享库和Python包**：
-```bash
-cd ~/lmcache/v1/storage_backend/dpu
-./build_python_package.sh
+### 构建 DPU Server
+
+> 这一步是为了构建并运行一个在 DPU 服务器的接收端，用来接收 LMCache 发送的缓存数据
+
+```shell
+cd ~/lmcache/v1/storage_backend/dpu && bash scripts/build_dpu.sh
 ```
 
-2. **验证安装**：
-```bash
-python3 example.py
+如果构建顺利的话，DPU Server 会出现在 `build-dpu/dpu_dma_copy`
+
+启动 DPU Server:
+
+```shell
+[root@r6kd-2g2 dpu]# ./build-dpu/dpu_dma_copy -p 0000:03:00.1 -T
+Starting DPU DMA server:
+  PCI Address: 0000:03:00.1
+  Mode: TCP
+  TCP Port: 18517
+
+===========================================
+  Complete DPU DMA Server                 
+===========================================
+[DPU] PCI: 0000:03:00.1
+[DPU] Stage buffer: 256 MiB
+[DPU] Max DMA chunk supported by device: 2097152 bytes
+[DPU] Using chunk size: 2097152 bytes, queue depth: 4
+[TCP] Listening on 0.0.0.0:18517
+[DPU] Waiting for TCP client on port 18517
 ```
 
-## 集成到LMCache
+> 可以通过 `doca_caps --list_devs` 来查找能够使用的 DOCA 设备
 
-要让`agent_wrapper.py`能够导入`dpu_cache`，有几种方式：
+### 构建 LMCache 插件
 
-### 方式1：符号链接（推荐用于开发）
+> 这步是为了构建 DMA 动态链接库以及 DMA Python 接口库还有 DPUStorageBackend 插件
 
-```bash
-# 在LMCache项目中创建符号链接
-cd /Users/mmzhou/program/llmcache/LMCache/.worktrees/dpu-backend-phase2
-ln -sf /Users/mmzhou/program/dpu_demo/gpu-dpu-transfer/python/dpu_cache lmcache/v1/storage_backend/dpu/
+#### 构建 DMA 动态库 & Python 接口
+
+> 这两个步骤被放在同一个脚本里面实现了，默认都会一起构建
+
+```shell
+cd ~/lmcache/v1/storage_backend/dpu && bash build_python_package.sh
 ```
 
-### 方式2：PYTHONPATH环境变量
+构建顺利的话，会创建一个 `/usr/local/lib/libdpu_cache.so` 动态链接库以及 `dpu_cache` 库，
 
-```bash
-export PYTHONPATH="/Users/mmzhou/program/dpu_demo/gpu-dpu-transfer/python:$PYTHONPATH"
+可以通过下面命令来测试是否创建成功：
+
+```shell
+python3 -c "import dpu_cache; print('module_path:', dpu_cache.__path__)"
 ```
 
-### 方式3：修改agent_wrapper.py的导入路径
+#### 构建 DPUStorageBackend 插件
 
-在`agent_wrapper.py`顶部添加：
-```python
-import sys
-sys.path.insert(0, '/Users/mmzhou/program/dpu_demo/gpu-dpu-transfer/python')
+> 因为这个插件是新增的，必须先安装 LMCache 开发模式，要不然动态链接不到
+
+```shell
+cd ~ && pip install -e . --no-build-isolation --no-deps
 ```
 
-## 验证集成
+通过下面命令来测试是否安装成功：
 
-修改后的`agent_wrapper.py`应该能够正常导入：
-
-```python
-try:
-    from dpu_cache._api import dpu_agent
-    from dpu_cache._api import dpu_agent_config
-    DPU_API_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"DPU API not available: {e}")
-    dpu_agent = None
-    dpu_agent_config = None
-    DPU_API_AVAILABLE = False
+```shell
+python3 -c "import lmcache.v1.storage_backend.dpu_storage_backend as dpu_storage_backend; print('module_name:', dpu_storage_backend.__name__)"
 ```
 
-## 当前实现状态
+到这边为止，所有的依赖已经安装成功，下面是如何通过 LMCache 来使用 DPUStorageBackend。
 
-✅ **已完成**：
-- C API基础框架 (`dpu_cache_api.c/h`)
-- Python ctypes包装 (`_api.py`)
-- 配置和异常处理
-- 基本的存储操作接口
-- 构建系统集成
+## 使用 DPUStorageBackend
 
-⚠️ **需要进一步开发**：
-- 集成真正的DOCA DMA传输逻辑（当前是模拟实现）
-- 完成`retrieve_kv`的tensor重建逻辑
-- DPU端文件管理和状态检查
-- 错误处理和恢复机制
+1. 创建 `lmcache_dpu.yaml`
 
-## 下一步
-
-1. 先测试基础的Python包导入和初始化
-2. 集成真正的DMA传输功能
-3. 完善检索和删除操作
-4. 性能优化和错误处理
-
-## 技术债务
-
-- C API中的DMA传输当前是占位符实现
-- retrieve_kv需要实现GPU内存分配和tensor重建
-- 需要更好的错误映射和日志记录
-- 缺少内存管理和资源清理的完整实现
+```shell
+(venv) root@r6kd-2:~/mmzhou# cat lmcache_dpu.yaml 
+chunk_size: 64
+local_cpu: False
+save_unfull_chunk: True
+storage_plugins: lmc_dpu_storage_backend
+extra_config:
+  storage_plugin.lmc_dpu_storage_backend.module_path: lmcache.v1.storage_backend.dpu_storage_backend
+  storage_plugin.lmc_dpu_storage_backend.class_name: DPUStorageBackend
+  # DPU configuration parameters
+  host_pci_addr: "1a:00.1"
+  dpu_ip: "10.75.70.128"
+  max_concurrent_ops: 16
+  gpu_id: 3
+```
