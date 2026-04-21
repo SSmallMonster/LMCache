@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <stdbool.h>
 
 
 // 声明run_dma_server函数
