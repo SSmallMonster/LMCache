@@ -172,6 +172,7 @@ static void create_kv_header(kv_header_t* header,
 static int perform_dma_push(void* gpu_data, size_t total_size, const char* dpu_path) {
     printf("[DPU_CACHE] perform_dma_push called: gpu_data=%p, size=%zu, path=%s\n",
            gpu_data, total_size, dpu_path);
+    const char* inline_push = getenv("DPU_CACHE_DEBUG_INLINE_PUSH");
 
     if (!g_config.initialized) {
         printf("[DPU_CACHE ERROR] DPU Cache not initialized\n");
@@ -188,9 +189,37 @@ static int perform_dma_push(void* gpu_data, size_t total_size, const char* dpu_p
 
     printf("[DPU_CACHE] Performing real DMA push: size=%zu bytes to %s\n", total_size, dpu_path);
 
-    int result = perform_real_dma_push(g_doca_dev, g_ctrl_channel,
-                                     gpu_data, total_size, dpu_path,
-                                     g_config.host_pci_addr);
+    int result;
+    if (inline_push != NULL && strcmp(inline_push, "1") == 0) {
+        void* host_copy = malloc(total_size);
+        if (host_copy == NULL) {
+            printf("[DPU_CACHE ERROR] Failed to allocate inline push buffer\n");
+            return DPU_CACHE_ERROR;
+        }
+
+        cudaError_t cuda_result = cudaMemcpy(host_copy, gpu_data, total_size,
+                                             cudaMemcpyDeviceToHost);
+        if (cuda_result != cudaSuccess) {
+            printf("[DPU_CACHE ERROR] Failed to copy inline push buffer: %s\n",
+                   cudaGetErrorString(cuda_result));
+            free(host_copy);
+            return DPU_CACHE_ERROR;
+        }
+
+        print_header_bytes("[DPU_CACHE] Inline push first bytes:",
+                           host_copy,
+                           total_size);
+        result = perform_debug_inline_push(g_ctrl_channel,
+                                           host_copy,
+                                           total_size,
+                                           dpu_path,
+                                           g_config.host_pci_addr);
+        free(host_copy);
+    } else {
+        result = perform_real_dma_push(g_doca_dev, g_ctrl_channel,
+                                       gpu_data, total_size, dpu_path,
+                                       g_config.host_pci_addr);
+    }
 
     if (result != 0) {
         printf("[DPU_CACHE ERROR] perform_real_dma_push failed with code: %d\n", result);

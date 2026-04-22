@@ -20,6 +20,7 @@ typedef enum {
 	DMA_REQ_PUSH_TO_DPU = 1,
 	DMA_REQ_PULL_INFO = 2,
 	DMA_REQ_PULL_TO_HOST = 3,
+	DMA_REQ_PUSH_INLINE_TO_DPU = 4,
 } dma_request_type_t;
 
 typedef struct {

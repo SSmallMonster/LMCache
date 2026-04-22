@@ -116,6 +116,53 @@ static void enable_cuda_sync_memops(void *gpu_data)
 #endif
 }
 
+int perform_debug_inline_push(struct ctrl_channel *ch,
+                              const void *data, size_t total_size,
+                              const char *dpu_path,
+                              const char *host_pci_addr)
+{
+    dma_transfer_request_t req = {0};
+    dma_transfer_response_t resp = {0};
+
+    if (total_size > DMA_EXPORT_DESC_MAX) {
+        fprintf(stderr,
+                "[DMA_INLINE_PUSH ERROR] payload too large: %zu > %d\n",
+                total_size,
+                DMA_EXPORT_DESC_MAX);
+        return -1;
+    }
+
+    req.magic = DMA_TRANSFER_MAGIC;
+    req.version = DMA_TRANSFER_VERSION;
+    req.type = DMA_REQ_PUSH_INLINE_TO_DPU;
+    req.remote_mem_type = DMA_REMOTE_MEM_CPU;
+    req.request_id = rand();
+    req.transfer_size_bytes = total_size;
+    req.export_desc_len = (uint32_t)total_size;
+
+    strncpy(req.host_pci_addr, host_pci_addr, sizeof(req.host_pci_addr) - 1);
+    strncpy(req.dpu_path, dpu_path, sizeof(req.dpu_path) - 1);
+    memcpy(req.export_desc, data, total_size);
+
+    fprintf(stderr,
+            "[DMA_INLINE_PUSH] Sending inline payload: req_id=%lu, size=%zu, path=%s\n",
+            req.request_id,
+            total_size,
+            dpu_path);
+
+    if (send_request_and_recv_response(ch, &req, &resp) != 0)
+        return -1;
+
+    if (resp.status != 0) {
+        fprintf(stderr,
+                "[DMA_INLINE_PUSH ERROR] DPU inline push failed: error_code=%u\n",
+                resp.error_code);
+        return -1;
+    }
+
+    return 0;
+}
+
 // 完整的DMA PUSH实现 - 直接基于dpu_dma_copy.c逻辑
 int perform_real_dma_push(struct doca_dev *dev, struct ctrl_channel *ch,
                          void* gpu_data, size_t total_size, const char* dpu_path,
@@ -831,6 +878,38 @@ out:
 	return result;
 }
 
+static doca_error_t handle_inline_push_to_dpu_server(const dma_transfer_request_t *req,
+						     dma_transfer_response_t *resp)
+{
+	FILE *fp = NULL;
+
+	if (req->transfer_size_bytes > DMA_EXPORT_DESC_MAX ||
+	    req->export_desc_len != req->transfer_size_bytes)
+		return DOCA_ERROR_INVALID_VALUE;
+
+	fp = fopen(req->dpu_path, "wb");
+	if (fp == NULL) {
+		printf("[DPU] Failed to create inline file: %s (errno: %d - %s)\n",
+		       req->dpu_path, errno, strerror(errno));
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	print_first_bytes_server("[DPU] INLINE PUSH first bytes:",
+				 req->export_desc,
+				 req->export_desc_len);
+	if (fwrite(req->export_desc, 1, req->export_desc_len, fp) != req->export_desc_len) {
+		fclose(fp);
+		return DOCA_ERROR_IO_FAILED;
+	}
+
+	fclose(fp);
+	resp->transfer_size_bytes = req->transfer_size_bytes;
+	printf("[DPU] INLINE PUSH %s: %" PRIu64 " bytes\n",
+	       req->dpu_path,
+	       req->transfer_size_bytes);
+	return DOCA_SUCCESS;
+}
+
 static doca_error_t handle_pull_info_server(const dma_transfer_request_t *req, dma_transfer_response_t *resp)
 {
 	struct stat st;
@@ -975,6 +1054,9 @@ int run_dma_server(const char *pci_addr, const char *rep_pci_addr,
 			break;
 		case DMA_REQ_PULL_TO_HOST:
 			result = handle_pull_to_host_server(&runtime, &req, &resp);
+			break;
+		case DMA_REQ_PUSH_INLINE_TO_DPU:
+			result = handle_inline_push_to_dpu_server(&req, &resp);
 			break;
 		default:
 			result = DOCA_ERROR_INVALID_VALUE;

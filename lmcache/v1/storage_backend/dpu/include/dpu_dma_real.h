@@ -17,6 +17,12 @@ int perform_real_dma_push(struct doca_dev *dev, struct ctrl_channel *ch,
                          void* gpu_data, size_t total_size, const char* dpu_path,
                          const char* host_pci_addr);
 
+// Debug-only small payload push over the control channel.
+int perform_debug_inline_push(struct ctrl_channel *ch,
+                              const void *data, size_t total_size,
+                              const char *dpu_path,
+                              const char *host_pci_addr);
+
 // 执行真正的DMA pull操作
 int perform_real_dma_pull(struct doca_dev *dev, struct ctrl_channel *ch,
                          const char* dpu_path, void* gpu_data, size_t total_size,
