@@ -19,7 +19,7 @@ import time
 import torch
 
 # First Party
-from dpu import DPUAgent, DPUConfig
+from dpu_cache import DPUAgent, DPUConfig
 
 
 def parse_args() -> argparse.Namespace:
