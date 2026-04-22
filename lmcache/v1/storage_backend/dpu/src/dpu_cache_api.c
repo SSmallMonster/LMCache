@@ -303,6 +303,19 @@ int dpu_cache_store(const char* key_id,
         cudaFree(gpu_buffer);
         return DPU_CACHE_ERROR;
     }
+    kv_header_t debug_header;
+    cuda_err = cudaMemcpy(
+        &debug_header, gpu_buffer, sizeof(kv_header_t), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to inspect store buffer header: %s\n",
+               cudaGetErrorString(cuda_err));
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+    print_header_bytes(
+        "[DPU_CACHE] Store buffer header first bytes:",
+        &debug_header,
+        sizeof(debug_header));
 
     int result = perform_dma_push(gpu_buffer, total_size, dpu_path);
 
@@ -403,6 +416,14 @@ int dpu_cache_retrieve(const char* key_id,
     }
 
     printf("[DPU_CACHE] Allocated GPU buffer: %p, size: %lu bytes\n", gpu_buffer, total_size);
+
+    cuda_result = cudaMemset(gpu_buffer, 0xA5, total_size);
+    if (cuda_result != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to initialize retrieve buffer: %s\n",
+               cudaGetErrorString(cuda_result));
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
 
     // 第三步：通过DMA pull从DPU读取完整文件数据
     int dma_result = perform_dma_pull(dpu_path, gpu_buffer, total_size);
