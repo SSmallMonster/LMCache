@@ -647,12 +647,6 @@ static doca_error_t submit_dma_batch(struct dma_runtime *runtime,
 		}
 		if (result != DOCA_SUCCESS)
 			goto cleanup;
-		result = doca_buf_set_data(
-			dst_buf,
-			pull_from_remote ? slot->local_addr : (void *)(uintptr_t)remote_addr,
-			curr_size);
-		if (result != DOCA_SUCCESS)
-			goto cleanup;
 
 		task_data.ptr = &slot->task_result;
 		result = doca_dma_task_memcpy_alloc_init(runtime->dma, src_buf, dst_buf, task_data, &slot->task);
