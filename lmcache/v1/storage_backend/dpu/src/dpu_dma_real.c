@@ -59,6 +59,17 @@ struct dma_slot {
 	void *local_addr;
 };
 
+static void print_first_bytes_server(const char *prefix, const void *data, size_t size)
+{
+	const unsigned char *bytes = data;
+	size_t limit = size < 16 ? size : 16;
+
+	printf("%s", prefix);
+	for (size_t i = 0; i < limit; ++i)
+		printf(" %02x", bytes[i]);
+	printf("\n");
+}
+
 // 发送请求并接收响应（直接来自gpu_dma_copy.cu）
 static int send_request_and_recv_response(struct ctrl_channel *ch,
                                          const dma_transfer_request_t *req,
@@ -444,7 +455,6 @@ static doca_error_t create_runtime_server(struct dma_runtime *runtime,
 		result = DOCA_ERROR_NO_MEMORY;
 		goto fail;
 	}
-	memset(runtime->stage_buffer, 0, runtime->stage_size);
 
 	result = doca_pe_create(&runtime->pe);
 	if (result != DOCA_SUCCESS)
@@ -604,6 +614,8 @@ static doca_error_t submit_dma_batch(struct dma_runtime *runtime,
 				result = DOCA_ERROR_IO_FAILED;
 				goto cleanup;
 			}
+			if (*processed_bytes == 0 && slot_count == 0)
+				print_first_bytes_server("[DPU] PULL file first bytes:", slot->local_addr, curr_size);
 			clock_gettime(CLOCK_MONOTONIC, &io_end);
 			*io_seconds += elapsed_seconds_server(&io_start, &io_end);
 		}
@@ -675,6 +687,8 @@ static doca_error_t submit_dma_batch(struct dma_runtime *runtime,
 	}
 
 	if (pull_from_remote) {
+		if (slot_count > 0)
+			print_first_bytes_server("[DPU] PUSH staging first bytes:", slots[0].local_addr, slots[0].size);
 		for (size_t i = 0; i < slot_count; ++i) {
 			clock_gettime(CLOCK_MONOTONIC, &io_start);
 			if (fwrite(slots[i].local_addr, 1, slots[i].size, fp) != slots[i].size) {
