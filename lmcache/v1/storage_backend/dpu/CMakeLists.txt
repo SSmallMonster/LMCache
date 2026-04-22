@@ -56,7 +56,8 @@ if(CMAKE_CUDA_COMPILER AND NOT CMAKE_CROSSCOMPILING)
     find_package(CUDAToolkit REQUIRED)
 
     # 添加CUDA支持到共享库
-    target_link_libraries(dpu_cache CUDA::cudart)
+    target_link_libraries(dpu_cache CUDA::cudart CUDA::cuda_driver)
+    target_compile_definitions(dpu_cache PRIVATE DPU_CACHE_ENABLE_CUDA_DRIVER=1)
 
     add_executable(gpu_dma_copy
         src/gpu_dma_copy.cu

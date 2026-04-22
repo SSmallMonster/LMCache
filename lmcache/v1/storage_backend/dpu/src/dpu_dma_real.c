@@ -14,6 +14,10 @@
 #include <doca_pe.h>
 #include <inttypes.h>
 
+#ifdef DPU_CACHE_ENABLE_CUDA_DRIVER
+#include <cuda.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -87,6 +91,31 @@ static int send_request_and_recv_response(struct ctrl_channel *ch,
     return 0;
 }
 
+static void enable_cuda_sync_memops(void *gpu_data)
+{
+#ifdef DPU_CACHE_ENABLE_CUDA_DRIVER
+    unsigned int flag = 1;
+    CUresult cu_result;
+    const char *err_name = NULL;
+
+    cu_result = cuPointerSetAttribute(&flag,
+                                      CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
+                                      (CUdeviceptr)(uintptr_t)gpu_data);
+    if (cu_result != CUDA_SUCCESS) {
+        cuGetErrorName(cu_result, &err_name);
+        fprintf(stderr,
+                "[DMA] Warning: failed to enable CUDA SYNC_MEMOPS for %p: %s\n",
+                gpu_data,
+                err_name != NULL ? err_name : "unknown");
+        return;
+    }
+
+    fprintf(stderr, "[DMA] Enabled CUDA SYNC_MEMOPS for GPU buffer %p\n", gpu_data);
+#else
+    (void)gpu_data;
+#endif
+}
+
 // 完整的DMA PUSH实现 - 直接基于dpu_dma_copy.c逻辑
 int perform_real_dma_push(struct doca_dev *dev, struct ctrl_channel *ch,
                          void* gpu_data, size_t total_size, const char* dpu_path,
@@ -103,6 +132,8 @@ int perform_real_dma_push(struct doca_dev *dev, struct ctrl_channel *ch,
     printf("[HOST] Starting real DMA push: %zu bytes to %s\n", total_size, dpu_path);
     fprintf(stderr, "[DMA_PUSH] Starting DMA push: size=%zu, path=%s, gpu_data=%p\n",
             total_size, dpu_path, gpu_data);
+
+    enable_cuda_sync_memops(gpu_data);
 
     // 创建GPU memory map - 基于gpu_dma_copy.cu的export_gpu_buffer
     result = doca_mmap_create(&gpu_mmap);
@@ -277,6 +308,8 @@ int perform_real_dma_pull(struct doca_dev *dev, struct ctrl_channel *ch,
         printf("Size mismatch: expected %zu, got %" PRIu64 "\n", total_size, resp.transfer_size_bytes);
         return -1;
     }
+
+    enable_cuda_sync_memops(gpu_data);
 
     // 第二步：准备GPU内存用于接收数据
     result = doca_mmap_create(&gpu_mmap);
