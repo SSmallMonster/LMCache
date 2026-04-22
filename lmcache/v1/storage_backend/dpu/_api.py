@@ -3,6 +3,7 @@
 
 # Standard
 import ctypes
+import ctypes.util
 import logging
 import os
 from typing import Optional, Tuple
@@ -92,6 +93,7 @@ class DPUAgent:
     def __init__(self, config: DPUConfig) -> None:
         self.config = config
         self.lib = None
+        self._cudart = None
         self._load_library()
         self._setup_function_signatures()
         self._initialize_dpu(config)
@@ -413,13 +415,63 @@ class DPUAgent:
             if tensor.device.type == "cuda"
             else CUDA_MEMCPY_DEVICE_TO_HOST
         )
-        cuda_result = torch.cuda.cudart().cudaMemcpy(
-            tensor.data_ptr(), data_ptr.value, size_bytes, copy_kind
-        )
-        cuda_error = cuda_result[0] if isinstance(cuda_result, tuple) else cuda_result
-        if cuda_error != 0:
-            raise DPUOperationError(f"cudaMemcpy failed with error code {cuda_error}")
+        self._cuda_memcpy(tensor.data_ptr(), data_ptr.value, size_bytes, copy_kind)
         return tensor
+
+    def _cuda_memcpy(
+        self, dst_ptr: int, src_ptr: int, size_bytes: int, copy_kind: int
+    ) -> None:
+        """Copy CUDA memory through libcudart instead of PyTorch private bindings."""
+        cudart = self._load_cuda_runtime()
+        cuda_error = cudart.cudaMemcpy(
+            ctypes.c_void_p(dst_ptr),
+            ctypes.c_void_p(src_ptr),
+            ctypes.c_size_t(size_bytes),
+            ctypes.c_int(copy_kind),
+        )
+        if cuda_error != 0:
+            error_string = cudart.cudaGetErrorString(cuda_error)
+            error_message = (
+                error_string.decode("utf-8")
+                if error_string is not None
+                else "unknown CUDA error"
+            )
+            raise DPUOperationError(
+                f"cudaMemcpy failed with error code {cuda_error}: {error_message}"
+            )
+
+    def _load_cuda_runtime(self) -> ctypes.CDLL:
+        """Load libcudart and configure the CUDA runtime functions used here."""
+        if self._cudart is not None:
+            return self._cudart
+
+        candidates = [
+            ctypes.util.find_library("cudart"),
+            "libcudart.so",
+            "libcudart.so.12",
+            "libcudart.so.11.0",
+        ]
+
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                cudart = ctypes.CDLL(candidate)
+                cudart.cudaMemcpy.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                    ctypes.c_size_t,
+                    ctypes.c_int,
+                ]
+                cudart.cudaMemcpy.restype = ctypes.c_int
+                cudart.cudaGetErrorString.argtypes = [ctypes.c_int]
+                cudart.cudaGetErrorString.restype = ctypes.c_char_p
+                self._cudart = cudart
+                return cudart
+            except OSError:
+                continue
+
+        raise DPUOperationError("Could not load libcudart for cudaMemcpy")
 
     def _free_retrieved_ptr(self, data_ptr: ctypes.c_void_p) -> None:
         """Release a CUDA buffer allocated by dpu_cache_retrieve."""
