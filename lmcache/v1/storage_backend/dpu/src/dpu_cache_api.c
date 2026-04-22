@@ -43,6 +43,17 @@ typedef struct {
     char reserved[8];        // 预留
 } kv_header_t;
 
+static void print_header_bytes(const char* prefix, const void* data, size_t size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    size_t limit = size < 16 ? size : 16;
+
+    printf("%s", prefix);
+    for (size_t i = 0; i < limit; i++) {
+        printf(" %02x", bytes[i]);
+    }
+    printf("\n");
+}
+
 int dpu_cache_init(dpu_config_t* config) {
     if (!config) {
         return DPU_CACHE_ERROR;
@@ -285,6 +296,14 @@ int dpu_cache_store(const char* key_id,
     // cudaMemcpy((char*)gpu_buffer + sizeof(kv_header_t) + k_size, v_data, v_size, cudaMemcpyDeviceToDevice);
 
     // 执行DMA传输
+    cuda_err = cudaDeviceSynchronize();
+    if (cuda_err != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to synchronize before DMA push: %s\n",
+               cudaGetErrorString(cuda_err));
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
     int result = perform_dma_push(gpu_buffer, total_size, dpu_path);
 
     // 清理GPU内存
@@ -393,6 +412,14 @@ int dpu_cache_retrieve(const char* key_id,
         return DPU_CACHE_ERROR;
     }
 
+    cuda_result = cudaDeviceSynchronize();
+    if (cuda_result != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to synchronize after DMA pull: %s\n",
+               cudaGetErrorString(cuda_result));
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
     printf("[DPU_CACHE] DMA pull completed successfully\n");
 
     // 第四步：将头部数据从GPU拷贝到CPU进行解析
@@ -407,6 +434,7 @@ int dpu_cache_retrieve(const char* key_id,
     // 第五步：验证文件头部
     if (memcmp(header.magic, "KVCH", 4) != 0) {
         printf("[DPU_CACHE ERROR] Invalid file magic: %.4s (expected KVCH)\n", header.magic);
+        print_header_bytes("[DPU_CACHE ERROR] Header first bytes:", &header, sizeof(header));
         cudaFree(gpu_buffer);
         return DPU_CACHE_ERROR;
     }
