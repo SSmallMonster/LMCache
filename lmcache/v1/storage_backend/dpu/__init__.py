@@ -1,6 +1,8 @@
-"""DPU Cache Python Package"""
+# SPDX-License-Identifier: Apache-2.0
+"""DPU Cache Python Package."""
 
-from ._api import DPUConfig, DPUAgent
+# Local
+from ._api import DPUAgent, DPUConfig
 
 __version__ = "0.1.0"
-__all__ = ['DPUConfig', 'DPUAgent']
+__all__ = ["DPUConfig", "DPUAgent"]

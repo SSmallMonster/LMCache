@@ -14,19 +14,23 @@ Key Features:
 - Comprehensive error handling
 """
 
+# Standard
 import asyncio
-import logging
-from typing import Dict, List, Optional, Tuple, Union, Sequence, Callable, Any
 from concurrent.futures import Future
+import logging
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+
+# Third Party
 import torch
 
+# First Party
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.config import LMCacheEngineConfig
-from lmcache.v1.memory_management import MemoryObj, MemoryFormat
+from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 from lmcache.v1.metadata import LMCacheMetadata
+from lmcache.v1.storage_backend.dpu import DPUAgent, DPUConfig
 from lmcache.v1.storage_backend.abstract_backend import StoragePluginInterface
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
-from dpu_cache import DPUConfig,DPUAgent
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +55,8 @@ class DPUStorageBackend(StoragePluginInterface):
         config: LMCacheEngineConfig,
         metadata: LMCacheMetadata,
         local_cpu_backend: LocalCPUBackend,
-        loop: Optional[asyncio.AbstractEventLoop] = None
-    ):
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> None:
         """
         Initialize the DPU storage backend.
 
@@ -72,19 +76,26 @@ class DPUStorageBackend(StoragePluginInterface):
         self.loop = loop or asyncio.get_event_loop()
 
         # DPU configuration from config
-        dpu_config_dict = config.extra_config or {}
+        dpu_config_dict = getattr(config, "extra_config", None) or {}
         self.dpu_config = DPUConfig(
-            host_pci_addr=dpu_config_dict.get("host_pci_addr", "03:00.0"),
+            host_pci_addr=dpu_config_dict.get(
+                "host_pci_addr",
+                dpu_config_dict.get("dpu_device_pci", "03:00.0"),
+            ),
             dpu_ip=dpu_config_dict.get("dpu_ip", "127.0.0.1"),
             gpu_id=dpu_config_dict.get("gpu_id", 0),
-            max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16)
+            max_concurrent_ops=dpu_config_dict.get("max_concurrent_ops", 16),
+            fallback_enabled=dpu_config_dict.get("fallback_enabled", True),
         )
 
         # Initialize DPU agent wrapper
         try:
             self.dpu_agent = DPUAgent(self.dpu_config)
             self.dpu_available = True
-            logger.info(f"DPU storage backend initialized with device {self.dpu_config.host_pci_addr}")
+            logger.info(
+                "DPU storage backend initialized with device %s",
+                self.dpu_config.host_pci_addr,
+            )
         except Exception as e:
             logger.error(f"Failed to initialize DPU agent: {e}")
             self.dpu_available = False
@@ -253,7 +264,7 @@ class DPUStorageBackend(StoragePluginInterface):
 
         return False
 
-    def get_allocator_backend(self):
+    def get_allocator_backend(self) -> LocalCPUBackend:
         """
         Get the allocator backend for memory allocation.
 
@@ -301,7 +312,7 @@ class DPUStorageBackend(StoragePluginInterface):
         if self.dpu_available:
             try:
                 k_tensor, v_tensor = self._extract_kv_tensors(obj)
-                success = self.dpu_agent.store_kv(key_str, k_tensor, v_tensor)
+                success = self.dpu_agent.store_kv_cache(key_str, k_tensor, v_tensor)
                 if success:
                     return
             except Exception as e:
@@ -327,32 +338,32 @@ class DPUStorageBackend(StoragePluginInterface):
         if obj.meta.fmt != MemoryFormat.KV_2LTD:
             raise ValueError(f"Unsupported memory format: {obj.meta.fmt}")
 
-        # For KV_2LTD format, we need to use raw_tensor (the flattened data)
-        # instead of tensor (which is already reshaped)
+        if obj.meta.shapes is not None and len(obj.meta.shapes) >= 2:
+            k_tensor = obj.get_tensor(0)
+            v_tensor = obj.get_tensor(1)
+            if k_tensor is None or v_tensor is None:
+                raise ValueError("Memory object has invalid grouped KV tensors")
+            return k_tensor, v_tensor
+
+        tensor = obj.tensor
+        if tensor is not None and tensor.dim() > 0 and tensor.shape[0] == 2:
+            return tensor[0].contiguous(), tensor[1].contiguous()
+
         raw_tensor = obj.raw_tensor
         if raw_tensor is None:
             raise ValueError("Memory object has no raw tensor data")
 
-        # For KV_2LTD format, the raw tensor contains flattened K and V concatenated
-        # We need to split it back into K and V tensors
-        total_size = raw_tensor.numel()
-        if total_size % 2 != 0:
-            raise ValueError("KV tensor size must be even for K/V split")
-
-        k_size = total_size // 2
-        k_tensor_flat = raw_tensor[:k_size]
-        v_tensor_flat = raw_tensor[k_size:total_size]
-
-        # Reshape to the original logical shape
-        k_tensor = k_tensor_flat.view(obj.meta.shape)
-        v_tensor = v_tensor_flat.view(obj.meta.shape)
-
-        return k_tensor, v_tensor
+        half_shape = torch.Size([2, *obj.meta.shape])
+        raise ValueError(
+            "Cannot infer K/V tensors from ungrouped KV_2LTD memory object "
+            f"with shape {obj.meta.shape}. Expected grouped tensors or a "
+            f"first dimension of 2, for example {half_shape}."
+        )
 
     def _create_memory_obj_from_kv(
         self,
         k_tensor: torch.Tensor,
-        v_tensor: torch.Tensor
+        v_tensor: torch.Tensor,
     ) -> MemoryObj:
         """
         Create a memory object from K and V tensors.
@@ -367,16 +378,20 @@ class DPUStorageBackend(StoragePluginInterface):
         # Get allocator from local CPU backend
         allocator = self.local_cpu_backend.get_memory_allocator()
 
-        # Create memory object with the same shape as K tensor
         mem_obj = allocator.allocate(
-            k_tensor.shape,
-            k_tensor.dtype,
-            fmt=MemoryFormat.KV_2LTD
+            [k_tensor.shape, v_tensor.shape],
+            [k_tensor.dtype, v_tensor.dtype],
+            fmt=MemoryFormat.KV_2LTD,
         )
+        if mem_obj is None:
+            raise RuntimeError("Failed to allocate memory object for DPU retrieve")
 
-        # Concatenate K and V tensors and copy to memory object
-        kv_concatenated = torch.cat([k_tensor.flatten(), v_tensor.flatten()])
-        mem_obj.tensor.copy_(kv_concatenated)
+        mem_k = mem_obj.get_tensor(0)
+        mem_v = mem_obj.get_tensor(1)
+        if mem_k is None or mem_v is None:
+            raise RuntimeError("Allocated memory object does not expose KV groups")
+        mem_k.copy_(k_tensor)
+        mem_v.copy_(v_tensor)
 
         return mem_obj
 
@@ -412,7 +427,9 @@ class DPUStorageBackend(StoragePluginInterface):
             error: The error that occurred
         """
         if self.dpu_config.fallback_enabled and self.dpu_available:
-            logger.warning(f"DPU error occurred: {error}. Disabling DPU and using fallback.")
+            logger.warning(
+                "DPU error occurred: %s. Disabling DPU and using fallback.", error
+            )
             self.dpu_available = False
         else:
             logger.error(f"DPU error occurred and fallback is disabled: {error}")

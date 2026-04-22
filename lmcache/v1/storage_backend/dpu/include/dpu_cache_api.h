@@ -33,6 +33,8 @@ int dpu_cache_retrieve(const char* key_id,
                       void** k_data, size_t* k_size, int* k_dtype, int* k_shape, int* k_ndim,
                       void** v_data, size_t* v_size, int* v_dtype, int* v_shape, int* v_ndim);
 
+int dpu_cache_free(void* ptr);
+
 int dpu_cache_remove(const char* key_id);
 int dpu_cache_contains(const char* key_id);
 

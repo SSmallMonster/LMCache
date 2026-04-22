@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
 #include <sys/stat.h>
 #include <stdbool.h>
 #include <cuda_runtime.h>
@@ -48,6 +49,12 @@ int dpu_cache_init(dpu_config_t* config) {
     }
     printf("  - DPU IP address: %s\n", config->dpu_ip);
     memcpy(&g_config, config, sizeof(dpu_config_t));
+    cudaError_t cuda_result = cudaSetDevice(g_config.gpu_id);
+    if (cuda_result != cudaSuccess) {
+        fprintf(stderr, "Failed to set CUDA device %d: %s\n",
+                g_config.gpu_id, cudaGetErrorString(cuda_result));
+        return EXIT_FAILURE;
+    }
 
     printf("===========================================\n");
     printf("  DPU Cache API Configuration              \n");
@@ -206,7 +213,9 @@ int dpu_cache_store(const char* key_id,
                    void* k_data, size_t k_size, int k_dtype, int* k_shape, int k_ndim,
                    void* v_data, size_t v_size, int v_dtype, int* v_shape, int v_ndim) {
 
-    if (!g_config.initialized || !key_id || !k_data || !v_data) {
+    if (!g_config.initialized || !key_id || !k_data || !v_data ||
+        !k_shape || !v_shape || k_ndim < 0 || k_ndim > 4 ||
+        v_ndim < 0 || v_ndim > 4) {
         return DPU_CACHE_ERROR;
     }
 
@@ -290,11 +299,60 @@ int dpu_cache_store(const char* key_id,
     return result;
 }
 
+static int query_dpu_file_size(const char* dpu_path, uint64_t* total_size) {
+    dma_transfer_request_t req = {0};
+    dma_transfer_response_t resp = {0};
+    uint32_t msg_len = 0;
+
+    if (!g_ctrl_channel || !total_size) {
+        return DPU_CACHE_ERROR;
+    }
+
+    req.magic = DMA_TRANSFER_MAGIC;
+    req.version = DMA_TRANSFER_VERSION;
+    req.type = DMA_REQ_PULL_INFO;
+    req.remote_mem_type = DMA_REMOTE_MEM_GPU;
+    req.request_id = rand();
+
+    strncpy(req.host_pci_addr, g_config.host_pci_addr, sizeof(req.host_pci_addr) - 1);
+    strncpy(req.dpu_path, dpu_path, sizeof(req.dpu_path) - 1);
+
+    if (ctrl_channel_send(g_ctrl_channel, &req, sizeof(req)) != DOCA_SUCCESS) {
+        printf("[DPU_CACHE ERROR] Failed to send pull-info request\n");
+        return DPU_CACHE_ERROR;
+    }
+
+    if (ctrl_channel_wait_for_message(g_ctrl_channel, &resp, sizeof(resp), &msg_len) != DOCA_SUCCESS) {
+        printf("[DPU_CACHE ERROR] Failed to receive pull-info response\n");
+        return DPU_CACHE_ERROR;
+    }
+
+    if (msg_len != sizeof(resp)) {
+        printf("[DPU_CACHE ERROR] Invalid response size: %u (expected %zu)\n", msg_len, sizeof(resp));
+        return DPU_CACHE_ERROR;
+    }
+
+    if (resp.status != 0) {
+        printf("[DPU_CACHE] File not found on DPU: %s (error_code=%u)\n", dpu_path, resp.error_code);
+        return DPU_CACHE_KEY_NOT_FOUND;
+    }
+
+    *total_size = resp.transfer_size_bytes;
+    return DPU_CACHE_SUCCESS;
+}
+
 int dpu_cache_retrieve(const char* key_id,
                       void** k_data, size_t* k_size, int* k_dtype, int* k_shape, int* k_ndim,
                       void** v_data, size_t* v_size, int* v_dtype, int* v_shape, int* v_ndim) {
 
     if (!g_config.initialized || !key_id) {
+        printf("[DPU_CACHE ERROR] DPU Cache not initialized or invalid key_id\n");
+        return DPU_CACHE_ERROR;
+    }
+
+    if (!k_data || !k_size || !k_dtype || !k_shape || !k_ndim ||
+        !v_data || !v_size || !v_dtype || !v_shape || !v_ndim) {
+        printf("[DPU_CACHE ERROR] Invalid output parameters\n");
         return DPU_CACHE_ERROR;
     }
 
@@ -302,10 +360,173 @@ int dpu_cache_retrieve(const char* key_id,
     char dpu_path[256];
     generate_dpu_path(key_id, dpu_path, sizeof(dpu_path));
 
-    // TODO: 实现完整的检索逻辑
-    printf("Retrieve operation for key: %s (not implemented yet)\n", key_id);
+    printf("[DPU_CACHE] Starting retrieve operation for key: %s -> %s\n", key_id, dpu_path);
 
-    return DPU_CACHE_KEY_NOT_FOUND;
+    // 第一步：检查文件是否存在并获取文件大小
+    uint64_t total_size = 0;
+    int query_result = query_dpu_file_size(dpu_path, &total_size);
+    if (query_result != DPU_CACHE_SUCCESS) {
+        return query_result;
+    }
+    if (total_size < sizeof(kv_header_t)) {
+        printf("[DPU_CACHE ERROR] File too small to contain valid header: %lu bytes\n", total_size);
+        return DPU_CACHE_ERROR;
+    }
+
+    printf("[DPU_CACHE] File found, total size: %lu bytes\n", total_size);
+
+    // 第二步：分配GPU内存用于接收完整文件数据
+    void* gpu_buffer = NULL;
+    cudaError_t cuda_result = cudaMalloc(&gpu_buffer, total_size);
+    if (cuda_result != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to allocate GPU memory: %s\n", cudaGetErrorString(cuda_result));
+        return DPU_CACHE_ERROR;
+    }
+
+    printf("[DPU_CACHE] Allocated GPU buffer: %p, size: %lu bytes\n", gpu_buffer, total_size);
+
+    // 第三步：通过DMA pull从DPU读取完整文件数据
+    int dma_result = perform_dma_pull(dpu_path, gpu_buffer, total_size);
+    if (dma_result != 0) {
+        printf("[DPU_CACHE ERROR] DMA pull failed with code: %d\n", dma_result);
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    printf("[DPU_CACHE] DMA pull completed successfully\n");
+
+    // 第四步：将头部数据从GPU拷贝到CPU进行解析
+    kv_header_t header;
+    cuda_result = cudaMemcpy(&header, gpu_buffer, sizeof(kv_header_t), cudaMemcpyDeviceToHost);
+    if (cuda_result != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to copy header from GPU: %s\n", cudaGetErrorString(cuda_result));
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    // 第五步：验证文件头部
+    if (memcmp(header.magic, "KVCH", 4) != 0) {
+        printf("[DPU_CACHE ERROR] Invalid file magic: %.4s (expected KVCH)\n", header.magic);
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    if (header.version != 1) {
+        printf("[DPU_CACHE ERROR] Unsupported file version: %u\n", header.version);
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    if (header.k_ndim < 0 || header.k_ndim > 4 ||
+        header.v_ndim < 0 || header.v_ndim > 4) {
+        printf("[DPU_CACHE ERROR] Invalid tensor rank in header: k=%d, v=%d\n",
+               header.k_ndim, header.v_ndim);
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    // 验证数据大小一致性
+    size_t expected_size = sizeof(kv_header_t) + header.k_size + header.v_size;
+    if (expected_size != total_size) {
+        printf("[DPU_CACHE ERROR] Size mismatch: header indicates %zu bytes, file has %lu bytes\n",
+               expected_size, total_size);
+        cudaFree(gpu_buffer);
+        return DPU_CACHE_ERROR;
+    }
+
+    printf("[DPU_CACHE] Header validation successful:\n");
+    printf("  - K tensor: dtype=%d, ndim=%d, size=%lu bytes\n", header.k_dtype, header.k_ndim, header.k_size);
+    printf("  - V tensor: dtype=%d, ndim=%d, size=%lu bytes\n", header.v_dtype, header.v_ndim, header.v_size);
+
+    // 第六步：分配K和V tensor的GPU内存
+    void* k_gpu_data = NULL;
+    void* v_gpu_data = NULL;
+
+    if (header.k_size > 0) {
+        cuda_result = cudaMalloc(&k_gpu_data, header.k_size);
+        if (cuda_result != cudaSuccess) {
+            printf("[DPU_CACHE ERROR] Failed to allocate K tensor memory: %s\n", cudaGetErrorString(cuda_result));
+            cudaFree(gpu_buffer);
+            return DPU_CACHE_ERROR;
+        }
+    }
+
+    if (header.v_size > 0) {
+        cuda_result = cudaMalloc(&v_gpu_data, header.v_size);
+        if (cuda_result != cudaSuccess) {
+            printf("[DPU_CACHE ERROR] Failed to allocate V tensor memory: %s\n", cudaGetErrorString(cuda_result));
+            cudaFree(gpu_buffer);
+            if (k_gpu_data) cudaFree(k_gpu_data);
+            return DPU_CACHE_ERROR;
+        }
+    }
+
+    // 第七步：从GPU buffer中分离K和V tensor数据
+    char* data_ptr = (char*)gpu_buffer + sizeof(kv_header_t);
+
+    if (header.k_size > 0) {
+        cuda_result = cudaMemcpy(k_gpu_data, data_ptr, header.k_size, cudaMemcpyDeviceToDevice);
+        if (cuda_result != cudaSuccess) {
+            printf("[DPU_CACHE ERROR] Failed to copy K tensor data: %s\n", cudaGetErrorString(cuda_result));
+            cudaFree(gpu_buffer);
+            if (k_gpu_data) cudaFree(k_gpu_data);
+            if (v_gpu_data) cudaFree(v_gpu_data);
+            return DPU_CACHE_ERROR;
+        }
+    }
+
+    if (header.v_size > 0) {
+        data_ptr += header.k_size;
+        cuda_result = cudaMemcpy(v_gpu_data, data_ptr, header.v_size, cudaMemcpyDeviceToDevice);
+        if (cuda_result != cudaSuccess) {
+            printf("[DPU_CACHE ERROR] Failed to copy V tensor data: %s\n", cudaGetErrorString(cuda_result));
+            cudaFree(gpu_buffer);
+            if (k_gpu_data) cudaFree(k_gpu_data);
+            if (v_gpu_data) cudaFree(v_gpu_data);
+            return DPU_CACHE_ERROR;
+        }
+    }
+
+    // 第八步：设置所有输出参数
+    *k_data = k_gpu_data;
+    *k_size = header.k_size;
+    *k_dtype = header.k_dtype;
+    *k_ndim = header.k_ndim;
+    for (int i = 0; i < header.k_ndim && i < 4; i++) {
+        k_shape[i] = header.k_shape[i];
+    }
+
+    *v_data = v_gpu_data;
+    *v_size = header.v_size;
+    *v_dtype = header.v_dtype;
+    *v_ndim = header.v_ndim;
+    for (int i = 0; i < header.v_ndim && i < 4; i++) {
+        v_shape[i] = header.v_shape[i];
+    }
+
+    // 清理临时buffer
+    cudaFree(gpu_buffer);
+
+    printf("[DPU_CACHE SUCCESS] Retrieve operation completed successfully:\n");
+    printf("  - K tensor: %p, %lu bytes, dtype=%d, ndim=%d\n", *k_data, *k_size, *k_dtype, *k_ndim);
+    printf("  - V tensor: %p, %lu bytes, dtype=%d, ndim=%d\n", *v_data, *v_size, *v_dtype, *v_ndim);
+
+    return DPU_CACHE_SUCCESS;
+}
+
+int dpu_cache_free(void* ptr) {
+    if (!ptr) {
+        return DPU_CACHE_SUCCESS;
+    }
+
+    cudaError_t cuda_result = cudaFree(ptr);
+    if (cuda_result != cudaSuccess) {
+        printf("[DPU_CACHE ERROR] Failed to free CUDA memory: %s\n",
+               cudaGetErrorString(cuda_result));
+        return DPU_CACHE_ERROR;
+    }
+
+    return DPU_CACHE_SUCCESS;
 }
 
 int dpu_cache_remove(const char* key_id) {
@@ -335,7 +556,6 @@ int dpu_cache_contains(const char* key_id) {
 
     printf("Contains check for key: %s -> %s\n", key_id, dpu_path);
 
-    // TODO: 检查DPU上文件是否存在
-
-    return DPU_CACHE_KEY_NOT_FOUND;  // 默认返回不存在
+    uint64_t total_size = 0;
+    return query_dpu_file_size(dpu_path, &total_size);
 }
